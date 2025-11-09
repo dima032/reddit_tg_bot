@@ -4,6 +4,7 @@ import json
 import logging
 import requests
 import functools
+import asyncio
 import html
 from typing import List, Dict, Set
 from telegram import Bot
@@ -71,6 +72,48 @@ def save_seen(path: str, seen: Set[str]):
             json.dump(list(seen), f)
     except Exception as e:
         logger.error("Failed to save seen file %s: %s", path, e)
+
+
+def retry_with_backoff(retries=3, backoff_in_seconds=1):
+    """Decorator that retries a function (sync or async) with exponential backoff.
+
+    Works for both sync and async functions. Uses time.sleep for waiting.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper_async(*args, **kwargs):
+            for i in range(retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    if i == retries - 1:  # Last attempt
+                        raise
+                    wait_time = (backoff_in_seconds * (2 ** i))
+                    logger.warning(
+                        "Attempt %d/%d failed: %s. Retrying in %ds...",
+                        i + 1, retries, str(e), wait_time
+                    )
+                    time.sleep(wait_time)
+            return None
+
+        @functools.wraps(func)
+        def wrapper_sync(*args, **kwargs):
+            for i in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if i == retries - 1:
+                        raise
+                    wait_time = (backoff_in_seconds * (2 ** i))
+                    logger.warning(
+                        "Attempt %d/%d failed: %s. Retrying in %ds...",
+                        i + 1, retries, str(e), wait_time
+                    )
+                    time.sleep(wait_time)
+            return None
+
+        return wrapper_async if asyncio.iscoroutinefunction(func) else wrapper_sync
+    return decorator
 
 @retry_with_backoff(retries=3, backoff_in_seconds=1)
 def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
@@ -211,51 +254,16 @@ async def send_post(bot: Bot, chat_id: str, post: Dict):
     if post.get("is_video", False) or post.get("is_gallery", False):
         # For video and gallery posts, just send the message with the link and icon
         await bot.send_message(chat_id=chat_id, text=caption, 
-                             parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+                            parse_mode=ParseMode.HTML, disable_web_page_preview=False)
     elif post.get("image_url"):
         await bot.send_photo(chat_id=chat_id, photo=post["image_url"], 
-                           caption=caption, parse_mode=ParseMode.HTML)
+                            caption=caption, parse_mode=ParseMode.HTML)
     else:
         await bot.send_message(chat_id=chat_id, text=caption, 
-                             parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+                            parse_mode=ParseMode.HTML, disable_web_page_preview=False)
     logger.info("Sent post %s to chat %s", post.get("id"), chat_id)
 
-def retry_with_backoff(retries=3, backoff_in_seconds=1):
-    def decorator(func):
-        @functools.wraps(func)
-        async def wrapper_async(*args, **kwargs):
-            for i in range(retries):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    if i == retries - 1:  # Last attempt
-                        raise  # Re-raise the last exception
-                    wait_time = (backoff_in_seconds * (2 ** i))  # exponential backoff
-                    logger.warning(
-                        "Attempt %d/%d failed: %s. Retrying in %ds...",
-                        i + 1, retries, str(e), wait_time
-                    )
-                    time.sleep(wait_time)
-            return None
-        
-        @functools.wraps(func)
-        def wrapper_sync(*args, **kwargs):
-            for i in range(retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    if i == retries - 1:  # Last attempt
-                        raise  # Re-raise the last exception
-                    wait_time = (backoff_in_seconds * (2 ** i))  # exponential backoff
-                    logger.warning(
-                        "Attempt %d/%d failed: %s. Retrying in %ds...",
-                        i + 1, retries, str(e), wait_time
-                    )
-                    time.sleep(wait_time)
-            return None
 
-        return wrapper_async if asyncio.iscoroutinefunction(func) else wrapper_sync
-    return decorator
 
 async def main():
     bot = Bot(token=TOKEN)
