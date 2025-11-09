@@ -96,16 +96,16 @@ def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
 
         # Check if it's a gallery post
         if d.get("is_gallery", False) or \
-           (url_dest and isinstance(url_dest, str) and \
+            (url_dest and isinstance(url_dest, str) and \
             ('gallery' in url_dest or '/gallery/' in url_dest)):
             is_gallery = True
         # Check if it's a video post
         elif d.get("is_video", False) or \
-           (url_dest and isinstance(url_dest, str) and \
+            (url_dest and isinstance(url_dest, str) and \
             (url_dest.lower().endswith(('.mp4', '.mov', '.webm')) or \
-             'v.redd.it' in url_dest or \
-             'youtube.com' in url_dest or \
-             'youtu.be' in url_dest)):
+            'v.redd.it' in url_dest or \
+            'youtube.com' in url_dest or \
+            'youtu.be' in url_dest)):
             is_video = True
         # Check for single image if not a video or gallery
         elif url_dest and isinstance(url_dest, str) and url_dest.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
