@@ -74,8 +74,13 @@ def save_seen(path: str, seen: Set[str]):
 
 @retry_with_backoff(retries=3, backoff_in_seconds=1)
 def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
-    url = f"https://www.reddit.com/r/{subreddit}/top.json?limit={limit}&t=day"
-    headers = {"User-Agent": USER_AGENT}
+    # Use the newer .json API with raw_json=1 to get unescaped data and include ups/downs
+    url = f"https://www.reddit.com/r/{subreddit}/top.json?limit={limit}&t=day&raw_json=1"
+    headers = {
+        "User-Agent": USER_AGENT,
+        # Add a more detailed user agent to help with rate limiting
+        "Accept": "application/json"
+    }
     r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
         logger.warning("Reddit returned status %s for /r/%s", r.status_code, subreddit)
@@ -118,14 +123,43 @@ def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
                 if src:
                     image_url = src.replace('&amp;', '&')
 
+        # Get more accurate vote counts
+        ups = d.get("ups", 0)
+        ratio = d.get("upvote_ratio", 1.0)
+        # Calculate total votes and actual score
+        total_votes = int(ups / ratio) if ratio > 0 else ups
+        downs = total_votes - ups if total_votes > ups else 0
+        score = ups - downs
+
+        # Get post flair if available
+        flair_text = None
+        if d.get("link_flair_text"):
+            flair_text = d["link_flair_text"]
+        # Some subreddits use custom flair templates
+        elif d.get("link_flair_richtext"):
+            rich_flair = d["link_flair_richtext"]
+            if isinstance(rich_flair, list):
+                flair_parts = []
+                for part in rich_flair:
+                    if part.get("t"):  # text part
+                        flair_parts.append(part["t"])
+                    elif part.get("e"):  # emoji part
+                        flair_parts.append(f':{part["e"]}:')
+                if flair_parts:
+                    flair_text = ''.join(flair_parts).strip()
+
         result.append({
             "id": d.get("id"),
             "title": d.get("title", "No Title"),
-            "score": d.get("score", 0),
+            "score": score,
+            "ups": ups,
+            "downs": downs,
+            "ratio": ratio,
             "permalink": d.get("permalink", ""),
             "image_url": image_url,
             "is_video": is_video,
             "is_gallery": is_gallery,
+            "flair": flair_text,
             "created_utc": d.get("created_utc", 0)
         })
     return result
@@ -136,17 +170,35 @@ def is_within_last_24h(created_utc: float) -> bool:
 def make_post_url(permalink: str) -> str:
     return f"https://reddit.com{permalink}"
 
-def build_caption(title: str, score: int, post_url: str) -> str:
+def build_caption(title: str, score: int, post_url: str, ups: int = None, ratio: float = None, flair: str = None) -> str:
     safe_title = html.escape(title)
-    # hyperlink the title
-    # Keep title as plain text and add hyperlink below
-    return f'{safe_title}\n<a href="{post_url}">🔗 Link to post</a>\n⬆️ {score}'
+    # Keep title as plain text and add hyperlink below and detailed stats
+    caption = f'{safe_title}'
+    
+    # Add flair if available
+    if flair:
+        safe_flair = html.escape(flair)
+        caption += f'\n🏷️ {safe_flair}'  # Tag emoji
+        
+    caption += f'\n<a href="{post_url}">🔗 Link to post</a>'
+    
+    # Add vote details if available
+    if ups is not None and ratio is not None:
+        upvote_percent = int(ratio * 100)
+        caption += f'\n⬆️ {score} ({upvote_percent}% upvoted)'
+    else:
+        caption += f'\n⬆️ {score}'
+    
+    return caption
 
 @retry_with_backoff(retries=3, backoff_in_seconds=1)
 async def send_post(bot: Bot, chat_id: str, post: Dict):
     post_url = make_post_url(post.get("permalink", ""))
     score = post.get("score", 0)
+    ups = post.get("ups")
+    ratio = post.get("ratio")
     title = post.get("title", "")
+    flair = post.get("flair")
     
     # Add appropriate icons for different types of posts
     if post.get("is_video", False):
@@ -154,7 +206,7 @@ async def send_post(bot: Bot, chat_id: str, post: Dict):
     elif post.get("is_gallery", False):
         title = "📷 " + title  # Camera with multiple images icon
 
-    caption = build_caption(title, score, post_url)
+    caption = build_caption(title, score, post_url, ups, ratio, flair)
     
     if post.get("is_video", False) or post.get("is_gallery", False):
         # For video and gallery posts, just send the message with the link and icon
