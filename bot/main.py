@@ -88,10 +88,27 @@ def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
         d = p.get("data", {})
         if not d:
             continue
-        # determine image url if any
+        # determine if post has video, gallery, or single image content
         image_url = None
+        is_video = False
+        is_gallery = False
         url_dest = d.get("url_overridden_by_dest") or d.get("url")
-        if url_dest and isinstance(url_dest, str) and url_dest.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+
+        # Check if it's a gallery post
+        if d.get("is_gallery", False) or \
+           (url_dest and isinstance(url_dest, str) and \
+            ('gallery' in url_dest or '/gallery/' in url_dest)):
+            is_gallery = True
+        # Check if it's a video post
+        elif d.get("is_video", False) or \
+           (url_dest and isinstance(url_dest, str) and \
+            (url_dest.lower().endswith(('.mp4', '.mov', '.webm')) or \
+             'v.redd.it' in url_dest or \
+             'youtube.com' in url_dest or \
+             'youtu.be' in url_dest)):
+            is_video = True
+        # Check for single image if not a video or gallery
+        elif url_dest and isinstance(url_dest, str) and url_dest.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
             image_url = url_dest
         else:
             # try preview images
@@ -107,6 +124,8 @@ def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
             "score": d.get("score", 0),
             "permalink": d.get("permalink", ""),
             "image_url": image_url,
+            "is_video": is_video,
+            "is_gallery": is_gallery,
             "created_utc": d.get("created_utc", 0)
         })
     return result
@@ -120,13 +139,28 @@ def make_post_url(permalink: str) -> str:
 def build_caption(title: str, score: int, post_url: str) -> str:
     safe_title = html.escape(title)
     # hyperlink the title
-    return f'<a href="{post_url}">{safe_title}</a>\n👍 {score}'
+    # Keep title as plain text and add hyperlink below
+    return f'{safe_title}\n<a href="{post_url}">🔗 Link to post</a>\n⬆️ {score}'
 
 @retry_with_backoff(retries=3, backoff_in_seconds=1)
 async def send_post(bot: Bot, chat_id: str, post: Dict):
     post_url = make_post_url(post.get("permalink", ""))
-    caption = build_caption(post.get("title", ""), post.get("score", 0), post_url)
-    if post.get("image_url"):
+    score = post.get("score", 0)
+    title = post.get("title", "")
+    
+    # Add appropriate icons for different types of posts
+    if post.get("is_video", False):
+        title = "🎥 " + title
+    elif post.get("is_gallery", False):
+        title = "📷 " + title  # Camera with multiple images icon
+
+    caption = build_caption(title, score, post_url)
+    
+    if post.get("is_video", False) or post.get("is_gallery", False):
+        # For video and gallery posts, just send the message with the link and icon
+        await bot.send_message(chat_id=chat_id, text=caption, 
+                             parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+    elif post.get("image_url"):
         await bot.send_photo(chat_id=chat_id, photo=post["image_url"], 
                            caption=caption, parse_mode=ParseMode.HTML)
     else:
