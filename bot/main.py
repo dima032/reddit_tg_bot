@@ -6,6 +6,7 @@ import requests
 import functools
 import asyncio
 import html
+import re
 from typing import List, Dict, Set
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -186,10 +187,20 @@ def get_top_posts(subreddit: str, limit: int = 50) -> List[Dict]:
                 for part in rich_flair:
                     if part.get("t"):  # text part
                         flair_parts.append(part["t"])
-                    elif part.get("e"):  # emoji part
-                        flair_parts.append(f':{part["e"]}:')
+                    # Skip emoji parts (they appear as :emoji_name:) to avoid clutter
                 if flair_parts:
-                    flair_text = ''.join(flair_parts).strip()
+                    # Join with space to preserve readability between parts
+                    flair_text = ' '.join(flair_parts).strip()
+
+        # Sanitise flair: some subreddits include emoji shortcodes like ":troll:" or
+        # other colon-wrapped tokens in flair text. These are not useful in the
+        # Telegram caption and look like plaintext. Remove any :shortcode: tokens
+        # to keep the flair readable.
+        if flair_text:
+            # remove patterns like :emoji_name:
+            flair_text = re.sub(r':[A-Za-z0-9_+-]+:', '', flair_text)
+            # collapse multiple spaces
+            flair_text = re.sub(r'\s{2,}', ' ', flair_text).strip()
 
         result.append({
             "id": d.get("id"),
