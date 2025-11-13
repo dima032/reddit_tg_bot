@@ -245,6 +245,30 @@ def build_caption(title: str, score: int, post_url: str, ups: int = None, ratio:
     
     return caption
 
+
+def is_image_url(url: str, timeout: int = 6) -> bool:
+    """Quick check whether a remote URL returns an image content-type.
+
+    Uses HEAD first (fast), falls back to a small GET if server doesn't return
+    content-type on HEAD. Returns True only when content-type starts with
+    'image/'.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        h = requests.head(url, allow_redirects=True, timeout=timeout)
+        ctype = h.headers.get('content-type', '') if h.status_code == 200 else ''
+        if ctype and ctype.startswith('image/'):
+            return True
+        # Some hosts don't respond to HEAD with content-type; try a tiny GET
+        g = requests.get(url, stream=True, allow_redirects=True, timeout=timeout)
+        ctype = g.headers.get('content-type', '')
+        # consume and close the connection
+        g.close()
+        return bool(ctype and ctype.startswith('image/'))
+    except Exception:
+        return False
+
 @retry_with_backoff(retries=3, backoff_in_seconds=1)
 async def send_post(bot: Bot, chat_id: str, post: Dict):
     post_url = make_post_url(post.get("permalink", ""))
@@ -267,8 +291,24 @@ async def send_post(bot: Bot, chat_id: str, post: Dict):
         await bot.send_message(chat_id=chat_id, text=caption, 
                             parse_mode=ParseMode.HTML, disable_web_page_preview=False)
     elif post.get("image_url"):
-        await bot.send_photo(chat_id=chat_id, photo=post["image_url"], 
-                            caption=caption, parse_mode=ParseMode.HTML)
+        image_url = post.get("image_url")
+        # Validate that URL actually points to an image; Reddit sometimes gives
+        # landing pages or HTML previews which Telegram rejects with
+        # "Wrong type of the web page content".
+        if is_image_url(image_url):
+            try:
+                await bot.send_photo(chat_id=chat_id, photo=image_url,
+                                    caption=caption, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                # If Telegram rejects the content for any reason, fallback to
+                # sending a text message with the link so the post still appears.
+                logger.warning("send_photo failed for %s: %s", image_url, e)
+                await bot.send_message(chat_id=chat_id, text=caption,
+                                parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+        else:
+            logger.info("Image URL is not an image or unreachable, sending link instead: %s", image_url)
+            await bot.send_message(chat_id=chat_id, text=caption,
+                                parse_mode=ParseMode.HTML, disable_web_page_preview=False)
     else:
         await bot.send_message(chat_id=chat_id, text=caption, 
                             parse_mode=ParseMode.HTML, disable_web_page_preview=False)
